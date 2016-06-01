@@ -12,8 +12,6 @@
 -- Getting declarations from PureScript sourcefiles
 -----------------------------------------------------------------------------
 
-{-# LANGUAGE FlexibleContexts      #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings     #-}
 
 module Language.PureScript.Ide.SourceFile where
@@ -35,6 +33,7 @@ import           Language.PureScript.Ide.Types
 import qualified Language.PureScript.Names            as N
 import qualified Language.PureScript.Parser           as P
 import           System.Directory
+import           System.IO.UTF8                       (readUTF8File)
 
 parseModuleFromFile :: (MonadIO m, MonadError PscIdeError m) =>
                        FilePath -> m D.Module
@@ -42,7 +41,7 @@ parseModuleFromFile fp = do
   exists <- liftIO (doesFileExist fp)
   if exists
     then do
-      content <- liftIO (readFile fp)
+      content <- liftIO (readUTF8File fp)
       let m = do tokens <- P.lex fp content
                  P.runTokenParser "" P.parseModule tokens
       either (throwError . (`ParseError` "File could not be parsed.")) pure m
@@ -67,14 +66,14 @@ getImportsForFile fp = do
   let imports = getImports module'
   pure (mkModuleImport . unwrapPositionedImport <$> imports)
   where
-    mkModuleImport (D.ImportDeclaration mn importType' qualifier _) =
+    mkModuleImport (D.ImportDeclaration mn importType' qualifier) =
       ModuleImport
       (T.pack (N.runModuleName mn))
       importType'
       (T.pack . N.runModuleName <$> qualifier)
     mkModuleImport _ = error "Shouldn't have gotten anything but Imports here"
-    unwrapPositionedImport (D.ImportDeclaration mn importType' qualifier b) =
-      D.ImportDeclaration mn (unwrapImportType importType') qualifier b
+    unwrapPositionedImport (D.ImportDeclaration mn importType' qualifier) =
+      D.ImportDeclaration mn (unwrapImportType importType') qualifier
     unwrapPositionedImport x = x
     unwrapImportType (D.Explicit decls) = D.Explicit (map unwrapPositionedRef decls)
     unwrapImportType (D.Hiding decls)   = D.Hiding (map unwrapPositionedRef decls)

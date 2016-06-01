@@ -20,6 +20,7 @@ module Language.PureScript.BundleOpt (
     uncurryFunc
 ) where
 
+import Prelude
 import qualified Data.Map as M
 import Data.Maybe (mapMaybe)
 

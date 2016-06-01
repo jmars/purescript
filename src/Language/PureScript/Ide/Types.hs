@@ -12,11 +12,7 @@
 -- Type definitions for psc-ide
 -----------------------------------------------------------------------------
 
-{-# LANGUAGE ConstraintKinds            #-}
-{-# LANGUAGE FlexibleContexts           #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE ScopedTypeVariables        #-}
 
 module Language.PureScript.Ide.Types where
 
@@ -33,6 +29,7 @@ import           Data.Maybe                           (maybeToList)
 import           Data.Text                            (Text (), pack, unpack)
 import qualified Language.PureScript.AST.Declarations as D
 import           Language.PureScript.Externs
+import qualified Language.PureScript.Errors.JSON      as P
 import qualified Language.PureScript.Names            as N
 import qualified Language.PureScript as P
 
@@ -64,6 +61,8 @@ data ExternDecl
       P.Type      -- The "type"
     -- | An exported module
     | TypeClassDeclaration (P.ProperName 'P.ClassName)
+    | ValueOperator (P.OpName 'P.ValueOpName) Ident P.Precedence P.Associativity
+    | TypeOperator (P.OpName 'P.TypeOpName) Ident P.Precedence P.Associativity
     | Export ModuleIdent -- The exported Modules name
     deriving (Show,Eq,Ord)
 
@@ -85,12 +84,13 @@ type PscIde m = (MonadIO m, MonadReader PscIdeEnvironment m)
 
 data PscIdeState =
   PscIdeState
-  { pscStateModules :: M.Map Text [ExternDecl]
-  , externsFiles    :: M.Map P.ModuleName ExternsFile
+  { pscIdeStateModules       :: M.Map Text [ExternDecl]
+  , pscIdeStateExternsFiles  :: M.Map P.ModuleName ExternsFile
+  , pscIdeStateCachedRebuild :: Maybe (P.ModuleName, ExternsFile)
   } deriving Show
 
 emptyPscIdeState :: PscIdeState
-emptyPscIdeState = PscIdeState M.empty M.empty
+emptyPscIdeState = PscIdeState M.empty M.empty Nothing
 
 data Match = Match ModuleIdent ExternDecl
                deriving (Show, Eq)
@@ -144,6 +144,7 @@ data Success =
   | PursuitResult [PursuitResponse]
   | ImportList [ModuleImport]
   | ModuleList [ModuleIdent]
+  | RebuildSuccess [P.JSONError]
   deriving(Show, Eq)
 
 encodeSuccess :: (ToJSON a) => a -> Value
@@ -157,6 +158,7 @@ instance ToJSON Success where
   toJSON (PursuitResult resp) = encodeSuccess resp
   toJSON (ImportList decls) = encodeSuccess decls
   toJSON (ModuleList modules) = encodeSuccess modules
+  toJSON (RebuildSuccess modules) = encodeSuccess modules
 
 newtype PursuitQuery = PursuitQuery Text
                      deriving (Show, Eq)

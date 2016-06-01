@@ -12,13 +12,9 @@
 -- Interface for the psc-ide-server
 -----------------------------------------------------------------------------
 
-{-# LANGUAGE ConstraintKinds       #-}
-{-# LANGUAGE FlexibleContexts      #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE PackageImports        #-}
 {-# LANGUAGE TemplateHaskell       #-}
-{-# LANGUAGE TupleSections         #-}
 
 module Language.PureScript.Ide
        ( handleCommand
@@ -29,6 +25,7 @@ module Language.PureScript.Ide
 import           Prelude                            ()
 import           Prelude.Compat
 
+import           Control.Monad                      (unless)
 import           Control.Monad.Error.Class
 import           Control.Monad.IO.Class
 import           "monad-logger" Control.Monad.Logger
@@ -39,34 +36,35 @@ import           Data.Maybe                         (catMaybes, mapMaybe)
 import           Data.Monoid
 import           Data.Text                          (Text)
 import qualified Data.Text                          as T
+import qualified Language.PureScript                as P
 import qualified Language.PureScript.Ide.CaseSplit  as CS
 import           Language.PureScript.Ide.Command
 import           Language.PureScript.Ide.Completion
 import           Language.PureScript.Ide.Error
 import           Language.PureScript.Ide.Externs
 import           Language.PureScript.Ide.Filter
-import           Language.PureScript.Ide.Imports hiding (Import)
+import           Language.PureScript.Ide.Imports    hiding (Import)
 import           Language.PureScript.Ide.Matcher
 import           Language.PureScript.Ide.Pursuit
+import           Language.PureScript.Ide.Rebuild
 import           Language.PureScript.Ide.Reexports
 import           Language.PureScript.Ide.SourceFile
 import           Language.PureScript.Ide.State
 import           Language.PureScript.Ide.Types
 import           Language.PureScript.Ide.Util
 import           System.Directory
-import           System.FilePath
 import           System.Exit
-
+import           System.FilePath
 
 handleCommand :: (PscIde m, MonadLogger m, MonadError PscIdeError m) =>
                  Command -> m Success
 handleCommand (Load [] []) = loadAllModules
 handleCommand (Load modules deps) =
   loadModulesAndDeps modules deps
-handleCommand (Type search filters) =
-  findType search filters
-handleCommand (Complete filters matcher) =
-  findCompletions filters matcher
+handleCommand (Type search filters currentModule) =
+  findType search filters currentModule
+handleCommand (Complete filters matcher currentModule) =
+  findCompletions filters matcher currentModule
 handleCommand (Pursuit query Package) =
   findPursuitPackages query
 handleCommand (Pursuit query Identifier) =
@@ -89,19 +87,24 @@ handleCommand (Import fp outfp filters (AddImportForIdentifier ident)) = do
   case rs of
     Right rs' -> answerRequest outfp rs'
     Left question -> pure $ CompletionResult (mapMaybe completionFromMatch question)
+handleCommand (Rebuild file) =
+  rebuildFile file
 handleCommand Cwd =
   TextResult . T.pack <$> liftIO getCurrentDirectory
+handleCommand Reset = resetPscIdeState *> pure (TextResult "State has been reset.")
 handleCommand Quit = liftIO exitSuccess
 
 findCompletions :: (PscIde m, MonadLogger m) =>
-                   [Filter] -> Matcher -> m Success
-findCompletions filters matcher =
-  CompletionResult . mapMaybe completionFromMatch . getCompletions filters matcher <$> getAllModulesWithReexports
+                   [Filter] -> Matcher -> Maybe P.ModuleName -> m Success
+findCompletions filters matcher currentModule = do
+  modules <- getAllModulesWithReexportsAndCache currentModule
+  pure . CompletionResult . mapMaybe completionFromMatch . getCompletions filters matcher $ modules
 
 findType :: (PscIde m, MonadLogger m) =>
-            DeclIdent -> [Filter] -> m Success
-findType search filters =
-  CompletionResult . mapMaybe completionFromMatch . getExactMatches search filters <$> getAllModulesWithReexports
+            DeclIdent -> [Filter] -> Maybe P.ModuleName -> m Success
+findType search filters currentModule = do
+  modules <- getAllModulesWithReexportsAndCache currentModule
+  pure . CompletionResult . mapMaybe completionFromMatch . getExactMatches search filters $ modules
 
 findPursuitCompletions :: (MonadIO m, MonadLogger m) =>
                           PursuitQuery -> m Success
@@ -113,14 +116,14 @@ findPursuitPackages :: (MonadIO m, MonadLogger m) =>
 findPursuitPackages (PursuitQuery q) =
   PursuitResult <$> liftIO (findPackagesForModuleIdent q)
 
-loadExtern ::(PscIde m, MonadLogger m, MonadError PscIdeError m) =>
+loadExtern :: (PscIde m, MonadLogger m, MonadError PscIdeError m) =>
              FilePath -> m ()
 loadExtern fp = do
   m <- readExternFile fp
   insertModule m
 
 printModules :: (PscIde m) => m Success
-printModules = printModules' <$> getPscIdeState
+printModules = printModules' . pscIdeStateModules <$> getPscIdeState
 
 printModules' :: M.Map ModuleIdent [ExternDecl] -> Success
 printModules' = ModuleList . M.keys
@@ -213,6 +216,8 @@ loadAllModules = do
   outputPath <- confOutputPath . envConfiguration <$> ask
   cwd <- liftIO getCurrentDirectory
   let outputDirectory = cwd </> outputPath
+  liftIO (doesDirectoryExist outputDirectory)
+    >>= flip unless (throwError (GeneralError "Couldn't locate your output directory"))
   liftIO (getDirectoryContents outputDirectory)
     >>= liftIO . traverse (getExternsPath outputDirectory)
     >>= traverse_ loadExtern . catMaybes
@@ -238,4 +243,3 @@ filePathFromModule moduleName = do
   if ex
     then pure path
     else throwError (ModuleFileNotFound moduleName)
-
